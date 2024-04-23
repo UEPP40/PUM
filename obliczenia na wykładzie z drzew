@@ -1,0 +1,30 @@
+100
+51 - klasa 0
+49 - klasa 1
+0,999
+
+I
+60
+44- klasa 0
+16- klasa 1
+0,837
+
+II
+40 - 
+7 - klasa 0
+33 - klasa 1
+obczlienia: -((7/40)*log2(7/40)+(33/40)*log2(33/40)) = 0,669
+0,669
+
+0,753
+
+
+Zysk informacyjny = 0,999-0,753 = 0,246
+
+Indeks Giniego
+p1 = 16        p2=33
+n2 = 44        n2=7
+gini(s1) = 1 - (44/60)^2 - (16/60)^2 = 0,391
+gini(s2) = 1 - (7/40)^2 - (33/40)^2 = 0,289
+
+gini_split = ((16+44)/100)*0,391 + ((7+33)/100)*0,289 = 0,35 (chcemy jak najmniejszy)
