@@ -1,0 +1,213 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Wczytanie danych z plików CSV
+ratings = pd.read_csv('https://s3-us-west-2.amazonaws.com/recommender-tutorial/ratings.csv')
+movies = pd.read_csv('https://s3-us-west-2.amazonaws.com/recommender-tutorial/movies.csv')
+
+# Wyświetlenie pierwszych kilku wierszy z danych
+print(ratings.head())
+print(movies.head())
+print('Liczba wszystkich ocen:', ratings.shape[0])
+print('Liczba filmów w bazie:', movies.shape[0])
+print('Liczba użytkowników:', ratings['userId'].nunique())
+print('Średnia liczba ocen na użytkownika:', ratings.shape[0] / ratings['userId'].nunique())
+print('Średnia liczba ocen na film:', ratings.shape[0] / movies.shape[0])
+print('Rozkład ocen:')
+print(ratings['rating'].value_counts())
+print(ratings['rating'].describe())
+
+# Lista filmów z największą liczbą ocen
+lista = ratings['movieId'].value_counts().sort_values(ascending=False)
+print(lista.head(10))
+print(movies[movies['movieId'] == 356].head(1))
+
+# Słownik z tytułami filmów
+movie_titles = dict(zip(movies['movieId'], movies['title']))
+
+# Grupowanie ocen po filmach i obliczenie średniej
+movie_stats = ratings.groupby('movieId')[['rating']].agg(['count', 'mean'])
+movie_stats.columns = movie_stats.columns.droplevel()
+C = movie_stats['count'].mean()
+m = movie_stats['mean'].mean()
+
+# Funkcja do obliczania średniej bayesowskiej
+def bayesian_avg(ratings):
+    bayesian_avg = (C * m + ratings.sum()) / (C + ratings.count())
+    return bayesian_avg
+
+# Obliczenie średnich bayesowskich
+bayesian_avg_ratings = ratings.groupby('movieId')['rating'].agg(bayesian_avg).reset_index()
+bayesian_avg_ratings.columns = ['movieId', 'bayesian_avg']
+movie_stats = movie_stats.merge(bayesian_avg_ratings, on='movieId')
+movie_stats = movie_stats.merge(movies[['movieId', 'title']])
+movie_stats.sort_values('bayesian_avg', ascending=False).head()
+movie_stats.sort_values('bayesian_avg', ascending=True).head()
+
+from scipy.sparse import csr_matrix
+
+# Funkcja do tworzenia macierzy rzadkiej
+def create_X(df):
+    N = df['userId'].nunique()
+    M = df['movieId'].nunique()
+
+    user_mapper = dict(zip(np.unique(df["userId"]), list(range(N))))
+    movie_mapper = dict(zip(np.unique(df["movieId"]), list(range(M))))
+
+    user_inv_mapper = dict(zip(list(range(N)), np.unique(df["userId"])))
+    movie_inv_mapper = dict(zip(list(range(M)), np.unique(df["movieId"])))
+
+    user_index = [user_mapper[i] for i in df['userId']]
+    movie_index = [movie_mapper[i] for i in df['movieId']]
+
+    X = csr_matrix((df["rating"], (movie_index, user_index)), shape=(M, N))
+
+    return X, user_mapper, movie_mapper, user_inv_mapper, movie_inv_mapper
+
+# Tworzenie macierzy X
+X, user_mapper, movie_mapper, user_inv_mapper, movie_inv_mapper = create_X(ratings)
+sparsity = X.count_nonzero() / (X.shape[0] * X.shape[1])
+
+print(f"Matrix sparsity: {round(sparsity * 100, 2)}%")
+
+from sklearn.neighbors import NearestNeighbors
+
+# Funkcja do znajdowania podobnych filmów
+def find_similar_movies(movie_id, X, k, metric='cosine', show_distance=False):
+    """
+    Znajduje k najbliższych sąsiadów dla podanego id filmu.
+
+    Args:
+        movie_id: id filmu
+        X: macierz użytkownik-film
+        k: liczba podobnych filmów do znalezienia
+        metric: metryka do obliczania kNN
+
+    Returns:
+        lista k podobnych filmów ID
+    """
+    neighbour_ids = []
+
+    movie_ind = movie_mapper[movie_id]
+    movie_vec = X[movie_ind]
+    k += 1
+    kNN = NearestNeighbors(n_neighbors=k, algorithm="brute", metric=metric)
+    kNN.fit(X)
+    if isinstance(movie_vec, (np.ndarray)):
+        movie_vec = movie_vec.reshape(1, -1)
+    neighbour = kNN.kneighbors(movie_vec, return_distance=show_distance)
+    for i in range(0, k):
+        n = neighbour.item(i)
+        neighbour_ids.append(movie_inv_mapper[n])
+    neighbour_ids.pop(0)
+    return neighbour_ids
+
+movie_titles = dict(zip(movies['movieId'], movies['title']))
+
+# Przykład użycia funkcji find_similar_movies
+movie_id = 1
+similar_ids = find_similar_movies(movie_id, X, k=100, metric="euclidean")
+
+movie_title = movie_titles[movie_id]
+print(f"Because you watched {movie_title}:")
+for i in similar_ids:
+    print(movie_titles[i])
+
+!pip install surprise
+
+# Importowanie odpowiednich bibliotek do analizy rekomendacji
+from surprise.model_selection import cross_validate, GridSearchCV
+from surprise.prediction_algorithms import SVD, KNNBasic, KNNBaseline
+from surprise import Dataset
+from surprise import Reader
+
+# Ustalanie minimalnej i maksymalnej oceny z danych
+min_rating = ratings.rating.min()
+max_rating = ratings.rating.max()
+reader = Reader(rating_scale=(min_rating, max_rating))
+data = Dataset.load_from_df(ratings[['userId', 'movieId', 'rating']], reader)
+
+'''
+Przegląd danych:
+1. Podaj liczbę filmów dla dzieci
+2. Pokaż rozkład ocen filmów z 1995
+3. Podaj średnią ocen wszystkich filmów akcji oraz 3 filmy najwyżej oceniane
+'''
+print(movies.head())
+
+# Filtracja i zwrócenie wszystkich filmów dla dzieci
+children_movies = movies[movies['genres'].str.contains("Children", case=False, na=False)]
+print(children_movies)
+
+# Funkcja do ekstrakcji roku z tytułu
+def extract_year(s):
+    if '(' in s and ')' in s:
+        return s[s.rfind('(')+1:s.rfind(')')]
+    return None
+
+# Zastosowanie funkcji do kolumny 'title'
+movies['year'] = movies['title'].apply(extract_year)
+
+# Filtracja filmów z 1995 roku
+movies_1995 = movies[movies['year'] == "1995"]
+movies_1995['year'] = movies_1995['year'].astype(int)
+
+# Filtracja ocen dla filmów z 1995 roku
+ratings_1995 = ratings[ratings['movieId'].isin(movies_1995['movieId'])]
+
+# Wyświetlenie rozkładu ocen
+print('Rozkład ocen:')
+print(ratings_1995['rating'].value_counts())
+print(ratings_1995['rating'].describe())
+
+# Filtracja filmów akcji
+action_movies = movies[movies['genres'].str.contains('Action')]
+
+# Łączenie DataFrame 'movies' z 'ratings'
+action_ratings = pd.merge(action_movies, ratings, on='movieId')
+
+# Obliczenie średniej ocen dla filmów akcji
+average_rating = action_ratings['rating'].mean()
+print(f'Średnia ocen filmów akcji: {average_rating:.2f}')
+
+# Znajdowanie trzech najwyżej ocenianych filmów akcji
+top_rated_action_movies = action_ratings.groupby('title')['rating'].mean().sort_values(ascending=False).head(3)
+print('Trzy najwyżej oceniane filmy akcji:')
+print(top_rated_action_movies)
+
+# Model SVD i walidacja krzyżowa
+algo = SVD()
+cross_validate(algo, data, measures=["RMSE", "MAE"], cv=5, verbose=True)
+
+# Model KNNBasic i walidacja krzyżowa
+algo = KNNBasic()
+cross_validate(algo, data, measures=["RMSE", "MAE"], cv=5, verbose=True)
+
+# Grid Search dla modelu SVD
+param_grid = {"n_epochs": [5, 10], "lr_all": [0.002, 0.005], "reg_all": [0.4, 0.6]}
+gs = GridSearchCV(SVD, param_grid, measures=["rmse", "mae"], cv=3)
+gs.fit(data)
+
+# Najlepszy wynik RMSE i parametry dla modelu SVD
+print(gs.best_score["rmse"])
+print(gs.best_params["rmse"])
+
+# Grid Search dla modelu KNNBasic
+gs = GridSearchCV(KNNBasic, param_grid, measures=["rmse", "mae"], cv=3)
+gs.fit(data)
+
+# Najlepszy wynik RMSE i parametry dla modelu KNNBasic
+print(gs.best_score["rmse"])
+print(gs.best_params["rmse"])
+
+import os
+from surprise import BaselineOnly, Dataset, Reader
+from surprise.model_selection import cross_validate
+
+# Definiowanie czytnika dla niestandardowego zbioru danych
+reader = Reader(line_format="user item rating timestamp", sep="\t")
+
+# Używanie tego zbioru danych według własnych potrzeb
+cross_validate(BaselineOnly(), data, verbose=True)
